@@ -1,0 +1,112 @@
+#
+# https://github.com/P3TERX/IBM-CF-V2
+#
+# Copyright (c) 2020 P3TERX <https://p3terx.com>
+#
+# This is free software, licensed under the MIT License.
+# See /LICENSE for more information.
+#
+
+name: Cloud Foundry
+
+env:
+  CF_API: https://api.us-south.cf.cloud.ibm.com
+  CF_APP_MEM: 256M
+
+on:
+  workflow_dispatch:
+  repository_dispatch: 
+  schedule:
+    - cron: 0 21 * * 5
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      CF_USERNAME: ${{ secrets.CF_USERNAME }}
+      CF_PASSWORD: ${{ secrets.CF_PASSWORD }}
+      CF_ORG_NAME: ${{ secrets.CF_ORG_NAME }}
+      CF_SPACE_NAME: ${{ secrets.CF_SPACE_NAME }}
+      CF_APP_NAME: ${{ secrets.CF_APP_NAME }}
+      UUID: ${{ secrets.UUID }}
+      WS_PATH: ${{ secrets.WS_PATH }}
+
+    steps:
+
+    - name: Install Cloud Foundry CLI
+      run: |
+        curl -fsSL "https://packages.cloudfoundry.org/stable?release=linux64-binary&source=github&version=v6" | tar -zxC /tmp
+        sudo mv /tmp/cf /usr/local/bin
+        cf version
+
+    - name: Login to IBM Cloud Foundry
+      run: |
+        cf login \
+          -a "${CF_API}" \
+          -u "${CF_USERNAME}" \
+          -p "${CF_PASSWORD}" \
+          -o "${CF_ORG_NAME:-$CF_USERNAME}" \
+          -s "${CF_SPACE_NAME:-dev}"
+
+    - name: Download Latest V2Ray
+      run: |
+        DOWNLOAD_URL="https://github.com/v2fly/v2ray-core/releases/latest/download/v2ray-linux-64.zip"
+        curl -fsSL "$DOWNLOAD_URL" -o "latest-v2ray.zip"
+        unzip latest-v2ray.zip v2ray v2ctl geoip.dat geosite.dat
+        rm latest-v2ray.zip
+        chmod -v 755 v2*
+        ./v2ray -version
+
+    - name: Generate V2Ray Config File
+      run: |
+        cat > config.json << EOF
+        {
+          "log": {
+            "access": "none"
+          },
+          "inbounds": [
+            {
+              "port": 8080,
+              "protocol": "vmess",
+              "settings": {
+                "clients": [
+                  {
+                    "id": "${UUID}",
+                    "alterId": 2
+                  }
+                ]
+              },
+              "streamSettings": {
+                "network":"ws",
+                "wsSettings": {
+                  "path": "${WS_PATH}"
+                }
+              }
+            }
+          ],
+          "outbounds": [
+            {
+              "protocol": "freedom",
+              "settings": {}
+            }
+          ]
+        }
+        EOF
+
+    - name: Generate Manifest File
+      run: |
+        cat > manifest.yml << EOF
+        applications:
+        - name: ${CF_APP_NAME}
+          memory: ${CF_APP_MEM}
+          disk_quota: 128M
+          instances: 1
+          random-route: true
+          command: ./v2ray -config=config.json
+          buildpacks:
+          - binary_buildpack
+        EOF
+
+    - name: Deploy Cloud Foundry App
+      run: cf push
